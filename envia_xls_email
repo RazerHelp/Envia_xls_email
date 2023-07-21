@@ -1,0 +1,175 @@
+*&---------------------------------------------------------------------*
+ REPORT Z_ENVIA_XLS_EMAIL.
+*&---------------------------------------------------------------------*
+
+ TYPES:
+      BEGIN OF ty_off,
+         texto1                TYPE string,
+         texto2                TYPE string,
+         texto3                TYPE string,
+         texto4                TYPE string,
+         texto5                TYPE string,
+         texto6                TYPE string,
+         texto7                TYPE string,
+         texto8                TYPE string,
+         texto9                TYPE string,
+         texto0                TYPE string,
+      END OF ty_off.
+
+ DATA: it_arquivo    TYPE          truxs_t_text_data,
+       it_off        TYPE TABLE OF ty_off,
+       wa_off        TYPE          ty_off.
+
+ START-OF-SELECTION.
+   PERFORM f_preecnhe_arq.
+   PERFORM f_treat_data_email.
+   PERFORM f_send_email.
+
+*&---------------------------------------------------------------------*
+*&      Form  F_SEND_EMAIL
+*&---------------------------------------------------------------------*
+ FORM f_send_email .
+   DATA:
+     l_datum(10),
+     ls_docdata    TYPE sodocchgi1,
+     lt_objpack    TYPE TABLE OF sopcklsti1 WITH HEADER LINE,
+     lt_objhead    TYPE TABLE OF solisti1   WITH HEADER LINE,
+     lt_objtxt     TYPE TABLE OF solisti1   WITH HEADER LINE,
+     lt_objbin     TYPE TABLE OF solisti1   WITH HEADER LINE,
+     lt_reclist    TYPE TABLE OF somlreci1  WITH HEADER LINE,
+     lt_listobject TYPE TABLE OF abaplist   WITH HEADER LINE,
+     lit_arquivo   TYPE          truxs_t_text_data WITH HEADER LINE,
+     l_tab_lines   TYPE          i,
+     l_att_type    LIKE          soodk-objtp,
+     ltp_msg       TYPE          string.
+
+   FIELD-SYMBOLS <arq> LIKE LINE OF it_arquivo.
+
+* Inicio Enviar E-mail como Excel
+   CONSTANTS:
+       c_nova_coluna  TYPE c VALUE cl_abap_char_utilities=>horizontal_tab,
+       c_nova_linha   TYPE c VALUE cl_abap_char_utilities=>newline.
+
+* Monta Arquivo
+   LOOP AT it_arquivo ASSIGNING <arq>.
+     IF <arq> IS ASSIGNED.
+       REPLACE ALL OCCURRENCES OF REGEX ';' IN <arq> WITH c_nova_coluna.
+       CLEAR lt_objbin.
+       CONCATENATE c_nova_coluna <arq> c_nova_linha INTO lt_objbin-line.
+       CONDENSE lt_objbin-line NO-GAPS.
+       APPEND lt_objbin.
+     ENDIF.
+   ENDLOOP.
+
+   ls_docdata-obj_name = 'Nome do anexo'.
+
+   CONCATENATE 'Lista de clientes' ''
+         INTO ls_docdata-obj_descr SEPARATED BY space.
+
+* Main Text
+   lt_objtxt = 'Texto de corpo da mensagem'.
+   APPEND lt_objtxt.
+
+* Write Packing List (Main)
+   DESCRIBE TABLE lt_objtxt LINES l_tab_lines.
+   READ TABLE lt_objtxt INDEX l_tab_lines.
+   ls_docdata-doc_size = ( l_tab_lines - 1 ) * 255 + strlen( lt_objtxt ).
+   CLEAR lt_objpack-transf_bin.
+   lt_objpack-head_start = 1.
+   lt_objpack-head_num = 0.
+   lt_objpack-body_start = 1.
+   lt_objpack-body_num = l_tab_lines.
+   lt_objpack-doc_type = 'RAW'.
+   APPEND lt_objpack.
+
+* Create Message Attachment
+* Write Packing List (Attachment)
+   l_att_type = 'XLSX'.
+   DESCRIBE TABLE lt_objbin LINES l_tab_lines.
+   READ TABLE lt_objbin INDEX l_tab_lines.
+   lt_objpack-doc_size = ( l_tab_lines - 1 ) * 255 + strlen( lt_objbin ).
+   lt_objpack-transf_bin = 'X'.
+   lt_objpack-head_start = 1.
+   lt_objpack-head_num = 0.
+   lt_objpack-body_start = 1.
+   lt_objpack-body_num = l_tab_lines.
+   lt_objpack-doc_type = l_att_type.
+   lt_objpack-obj_name = 'ATTACHMENT'.
+   lt_objpack-obj_descr = 'Lista de preços'.                "#EC *
+   APPEND lt_objpack.
+
+   lt_reclist-receiver = 'EMAIL@DOMINIO.COM'.
+   lt_reclist-rec_type = 'U'.
+   APPEND lt_reclist.
+
+* Send Message
+   CALL FUNCTION 'SO_NEW_DOCUMENT_ATT_SEND_API1'
+     EXPORTING
+       document_data              = ls_docdata
+       put_in_outbox              = 'X'
+       commit_work                = 'X'
+     TABLES
+       packing_list               = lt_objpack
+       object_header              = lt_objhead
+       contents_bin               = lt_objbin
+       contents_txt               = lt_objtxt
+       receivers                  = lt_reclist
+     EXCEPTIONS
+       too_many_receivers         = 1
+       document_not_sent          = 2
+       document_type_not_exist    = 3
+       operation_no_authorization = 4
+       parameter_error            = 5
+       x_error                    = 6
+       enqueue_error              = 7
+       OTHERS                     = 8.
+
+   IF sy-subrc <> 0.
+     MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+             WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4 DISPLAY LIKE 'S'.
+   ELSE.
+     CONCATENATE 'E-mail enviado para o endereço:'
+                 lt_reclist-receiver
+                 INTO ltp_msg
+                 SEPARATED BY space.
+     MESSAGE ltp_msg TYPE 'S' .
+   ENDIF.
+ ENDFORM.                    " F_SEND_EMAIL
+*&---------------------------------------------------------------------*
+*&      Form  F_TREAT_DATA_EMAIL
+*&---------------------------------------------------------------------*
+ FORM f_treat_data_email .
+   CALL FUNCTION 'SAP_CONVERT_TO_CSV_FORMAT'
+     EXPORTING
+       i_field_seperator    = ';'
+       i_appl_keep          = ' '
+     TABLES
+       i_tab_sap_data       = it_off
+     CHANGING
+       i_tab_converted_data = it_arquivo
+     EXCEPTIONS
+       conversion_failed    = 1
+       OTHERS               = 2.
+   IF sy-subrc <> 0.
+     MESSAGE ID sy-msgid TYPE sy-msgty NUMBER sy-msgno
+             WITH sy-msgv1 sy-msgv2 sy-msgv3 sy-msgv4 DISPLAY LIKE 'S'.
+   ENDIF.
+ ENDFORM.                    " F_TREAT_DATA_EMAIL
+*&---------------------------------------------------------------------*
+*&      Form  F_PREECNHE_ARQ
+*&---------------------------------------------------------------------*
+ FORM f_preecnhe_arq .
+   DO 20000 TIMES.
+     wa_off-texto0 = 'TEXTO0'.
+     wa_off-texto1 = 'TEXTO1'.
+     wa_off-texto2 = 'TEXTO2'.
+     wa_off-texto3 = 'TEXTO3'.
+     wa_off-texto4 = 'TEXTO4'.
+     wa_off-texto5 = 'TEXTO5'.
+     wa_off-texto6 = 'TEXTO6'.
+     wa_off-texto7 = 'TEXTO7'.
+     wa_off-texto8 = 'TEXTO8'.
+     wa_off-texto9 = 'TEXTO9'.
+     APPEND wa_off TO it_off.
+   ENDDO.
+ ENDFORM.                    " F_PREECNHE_ARQ
